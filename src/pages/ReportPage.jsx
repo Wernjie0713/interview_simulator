@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { ArrowLeft, Download, Share2, AlertCircle, CheckCircle2, Info } from "lucide-react";
+import { ArrowLeft, Download, Share2, AlertCircle, CheckCircle2, Info, Check } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 
 export default function ReportPage() {
@@ -15,6 +15,7 @@ export default function ReportPage() {
   const navigate = useNavigate();
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isShared, setIsShared] = useState(false);
 
   useEffect(() => {
     const fetchReport = async () => {
@@ -46,18 +47,46 @@ export default function ReportPage() {
     { time: "3:05", type: "warning", text: "Avoid using filler words like 'um' and 'like' during complex explanations." },
   ];
 
+  const handleExportPDF = () => {
+    window.print();
+  };
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Interview Report - ${report.type}`,
+          text: `Check out my interview report for ${report.type}! Score: ${report.score}%`,
+          url: url,
+        });
+      } catch (error) {
+        console.log('Error sharing:', error);
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(url);
+        setIsShared(true);
+        setTimeout(() => setIsShared(false), 2000);
+      } catch (err) {
+        console.error('Failed to copy:', err);
+      }
+    }
+  };
+
   return (
     <div className="container py-10 space-y-8 max-w-5xl">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between print:hidden">
         <Button variant="ghost" onClick={() => navigate("/dashboard")} className="gap-2">
           <ArrowLeft className="h-4 w-4" /> Back to Dashboard
         </Button>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="gap-2">
+          <Button variant="outline" size="sm" className="gap-2" onClick={handleExportPDF}>
             <Download className="h-4 w-4" /> Export PDF
           </Button>
-          <Button variant="outline" size="sm" className="gap-2">
-            <Share2 className="h-4 w-4" /> Share
+          <Button variant="outline" size="sm" className="gap-2" onClick={handleShare}>
+            {isShared ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
+            {isShared ? "Copied!" : "Share"}
           </Button>
         </div>
       </div>
@@ -106,30 +135,30 @@ export default function ReportPage() {
             <CardTitle className="text-lg">Quick Insights</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="h-5 w-5 text-green-500 mt-0.5" />
-              <p className="text-sm">Great smile during the introduction.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5" />
-              <p className="text-sm">Fidgeting detected at 0:45.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <Info className="h-5 w-5 text-blue-500 mt-0.5" />
-              <p className="text-sm">Maintain more consistent eye contact.</p>
-            </div>
+            {report.keyInsights && report.keyInsights.length > 0 ? (
+              report.keyInsights.map((insight, index) => (
+                <div key={index} className="flex items-start gap-3">
+                  {insight.type === "positive" && <CheckCircle2 className="h-5 w-5 text-green-500 mt-0.5" />}
+                  {insight.type === "warning" && <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5" />}
+                  {insight.type === "info" && <Info className="h-5 w-5 text-blue-500 mt-0.5" />}
+                  <p className="text-sm">{insight.text}</p>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">No quick insights available.</p>
+            )}
           </CardContent>
         </Card>
       </div>
 
       <Tabs defaultValue="timeline" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 max-w-[400px]">
+        <TabsList className="grid w-full grid-cols-2 max-w-[400px] print:hidden">
           <TabsTrigger value="timeline">Feedback Timeline</TabsTrigger>
           <TabsTrigger value="transcript">Transcript</TabsTrigger>
         </TabsList>
         <TabsContent value="timeline" className="mt-6">
           <Card>
-            <ScrollArea className="h-[400px] p-6">
+            <ScrollArea className="h-[400px] print:h-auto p-6">
               <div className="space-y-8">
                 {FEEDBACK_ITEMS.map((item, index) => (
                   <div key={index} className="flex gap-4">
@@ -158,7 +187,7 @@ export default function ReportPage() {
         </TabsContent>
         <TabsContent value="transcript" className="mt-6">
           <Card>
-            <ScrollArea className="h-[400px] p-6">
+            <ScrollArea className="h-[400px] print:h-auto p-6">
               <div className="space-y-4 text-sm leading-relaxed">
                 {report.transcript ? (
                   <p className="whitespace-pre-wrap">{report.transcript}</p>

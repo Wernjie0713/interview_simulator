@@ -8,6 +8,33 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, History, TrendingUp, Award } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
+const formatDate = (dateString) => {
+  if (!dateString) return "N/A";
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return dateString;
+  
+  const day = date.getDate();
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  
+  const getOrdinalSuffix = (n) => {
+    const j = n % 10,
+        k = n % 100;
+    if (j === 1 && k !== 11) {
+        return "st";
+    }
+    if (j === 2 && k !== 12) {
+        return "nd";
+    }
+    if (j === 3 && k !== 13) {
+        return "rd";
+    }
+    return "th";
+  };
+
+  return `${day}${getOrdinalSuffix(day)} ${month} ${year}`;
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -109,7 +136,7 @@ export default function Dashboard() {
                 {interviews.map((interview) => (
                   <TableRow key={interview.id}>
                     <TableCell className="font-medium capitalize">{interview.type}</TableCell>
-                    <TableCell>{interview.date}</TableCell>
+                    <TableCell>{formatDate(interview.date)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <span className="font-bold">{interview.score || 0}%</span>

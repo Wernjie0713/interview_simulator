@@ -7,6 +7,7 @@ export function useSpeechToText() {
   const recognitionRef = useRef(null);
   const isStoppingRef = useRef(false);
   const isStartedRef = useRef(false);
+  const restartAfterStopRef = useRef(false);
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -31,6 +32,15 @@ export function useSpeechToText() {
       setIsListening(false);
       isStartedRef.current = false;
       isStoppingRef.current = false;
+      
+      if (restartAfterStopRef.current) {
+        console.log("STT: Restarting after stop...");
+        restartAfterStopRef.current = false;
+        // Small delay to ensure browser is ready
+        setTimeout(() => {
+          startListening();
+        }, 100);
+      }
     };
 
     recognition.onerror = (event) => {
@@ -42,6 +52,7 @@ export function useSpeechToText() {
       setIsListening(false);
       isStartedRef.current = false;
       isStoppingRef.current = false;
+      restartAfterStopRef.current = false;
     };
 
     recognition.onresult = (event) => {
@@ -67,9 +78,16 @@ export function useSpeechToText() {
   }, []);
 
   const startListening = useCallback(() => {
-    if (recognitionRef.current && !isStartedRef.current && !isStoppingRef.current) {
+    if (isStoppingRef.current) {
+      console.log("STT: Stop in progress, scheduling restart");
+      restartAfterStopRef.current = true;
+      return;
+    }
+
+    if (recognitionRef.current && !isStartedRef.current) {
       try {
-        setTranscript("");
+        // Don't clear transcript here, let the consumer handle it if needed
+        // setTranscript(""); 
         setInterimTranscript("");
         recognitionRef.current.start();
       } catch (err) {

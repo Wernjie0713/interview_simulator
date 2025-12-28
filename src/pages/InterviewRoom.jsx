@@ -21,6 +21,8 @@ export default function InterviewRoom() {
   const [isThinking, setIsThinking] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isAISpeaking, setIsAISpeaking] = useState(false);
+  const [interviewHistory, setInterviewHistory] = useState([]);
+  const [interviewData, setInterviewData] = useState(null);
   
   const { videoRef, results, isLoading: isMediaPipeLoading } = useMediaPipe();
   const { 
@@ -33,20 +35,80 @@ export default function InterviewRoom() {
   } = useSpeechToText();
 
   const streamRef = useRef(null);
+  const isMutedRef = useRef(isMuted);
+  const prevIsMuted = useRef(isMuted);
+  const audioRef = useRef(new Audio());
+
+  const speakResponse = useCallback(async (text) => {
+    setIsAISpeaking(true);
+    try {
+      const audioUrl = await ttsService.getAudioUrl(text);
+      if (audioUrl && audioRef.current) {
+        audioRef.current.src = audioUrl;
+        await audioRef.current.play();
+        
+        audioRef.current.onended = () => {
+          setIsAISpeaking(false);
+          if (!isMutedRef.current) startListening();
+        };
+      } else {
+        setIsAISpeaking(false);
+      }
+    } catch (err) {
+      console.error("TTS Error", err);
+      setIsAISpeaking(false);
+    }
+  }, [startListening]);
+
+  // Handle mute toggle
+  useEffect(() => {
+    if (prevIsMuted.current !== isMuted) {
+      if (isMuted) {
+        stopListening();
+      } else {
+        if (!isAISpeaking && !isThinking && isInterviewing) {
+          startListening();
+        }
+      }
+      prevIsMuted.current = isMuted;
+    }
+    isMutedRef.current = isMuted;
+  }, [isMuted, isAISpeaking, isThinking, isInterviewing, stopListening, startListening]);
+
+  // Fetch interview data
+  useEffect(() => {
+    async function fetchInterviewData() {
+      try {
+        const data = await interviewService.getInterviewReport(id);
+        if (data) {
+          setInterviewData(data);
+        }
+      } catch (error) {
+        console.error("Error fetching interview data:", error);
+      }
+    }
+    if (id) {
+      fetchInterviewData();
+    }
+  }, [id]);
 
   // Start interview logic
   useEffect(() => {
-    if (!isMediaPipeLoading && isInterviewing) {
+    if (!isMediaPipeLoading && isInterviewing && interviewData) {
       const startInterview = async () => {
         setIsThinking(true);
         try {
-          const question = await geminiService.getInterviewQuestion("General behavioral interview for a software engineer role.");
+          let context = `Interview Type: ${interviewData.type}. Difficulty: ${interviewData.difficulty}.`;
+          if (interviewData.cvSummary) {
+            context += ` Candidate CV Summary: ${interviewData.cvSummary}.`;
+          } else {
+            context += ` General behavioral interview for a software engineer role.`;
+          }
+
+          const question = await geminiService.getInterviewQuestion(context);
           setCurrentQuestion(question);
           setIsThinking(false);
-          setIsAISpeaking(true);
-          await ttsService.speak(question);
-          setIsAISpeaking(false);
-          startListening();
+          await speakResponse(question);
         } catch (err) {
           console.error("Failed to start interview:", err);
           setIsThinking(false);
@@ -54,7 +116,7 @@ export default function InterviewRoom() {
       };
       startInterview();
     }
-  }, [isMediaPipeLoading]);
+  }, [isMediaPipeLoading, interviewData, speakResponse]);
 
   // Handle follow-up questions
   const handleNextQuestion = useCallback(async () => {
@@ -63,7 +125,17 @@ export default function InterviewRoom() {
     
     const expression = getExpression();
     const userMessage = transcript.trim() || "[User skipped or provided no verbal answer]";
-    const context = `User response: "${userMessage}". Their expression was ${expression}. Ask a relevant follow-up question or continue the interview.`;
+    
+    // Save current Q&A to history
+    setInterviewHistory(prev => [...prev, { question: currentQuestion, answer: userMessage }]);
+
+    let context = `User response: "${userMessage}". Their expression was ${expression}.`;
+    
+    if (interviewData?.cvSummary) {
+      context += ` Context: Candidate CV Summary: ${interviewData.cvSummary}.`;
+    }
+    
+    context += ` Ask a relevant follow-up question or continue the interview.`;
     
     try {
       const nextQuestion = await geminiService.getInterviewQuestion(context);
@@ -71,22 +143,16 @@ export default function InterviewRoom() {
       setIsThinking(false);
       setTranscript("");
       
-      setIsAISpeaking(true);
-      await ttsService.speak(nextQuestion);
-      setIsAISpeaking(false);
-      
-      // Small delay to ensure STT doesn't pick up the end of the AI's voice
-      setTimeout(() => {
-        startListening();
-      }, 500);
+      await speakResponse(nextQuestion);
     } catch (err) {
       console.error("Failed to get follow-up:", err);
       setIsThinking(false);
+      setTranscript("");
       // Fallback to keep the interview moving
       setCurrentQuestion("Tell me more about your experience with that.");
-      startListening();
+      if (!isMutedRef.current) startListening();
     }
-  }, [transcript, stopListening, startListening, setTranscript]);
+  }, [transcript, currentQuestion, stopListening, startListening, setTranscript, interviewData, speakResponse]);
 
   // Webcam setup
   useEffect(() => {
@@ -127,13 +193,140 @@ export default function InterviewRoom() {
   // Simple expression detection logic
   const getExpression = () => {
     if (!results?.faceBlendshapes?.[0]) return "Neutral";
-    const blendshapes = results.faceBlendshapes[0].categories;
-    const smile = blendshapes.find(b => b.categoryName === "mouthSmileLeft")?.score || 0;
-    const frown = blendshapes.find(b => b.categoryName === "browDownLeft")?.score || 0;
     
-    if (smile > 0.5) return "Smiling";
-    if (frown > 0.3) return "Serious/Frowning";
-    return "Neutral";
+    const blendshapes = results.faceBlendshapes[0].categories;
+
+    // Helper: Get score for a specific shape name
+    const getScore = (name) => blendshapes.find((b) => b.categoryName === name)?.score || 0;
+
+    // 1. CALCULATE COMPOSITE SCORES
+    // Combine Left and Right for symmetry, and average them.
+    
+    // Smile: Corners of mouth going up
+    const smileScore = (getScore("mouthSmileLeft") + getScore("mouthSmileRight")) / 2;
+
+    // Frown/Focused: Brows going down (furrowing)
+    const focusScore = (getScore("browDownLeft") + getScore("browDownRight")) / 2;
+
+    // Speaking/Surprised: Jaw is open
+    const jawOpenScore = getScore("jawOpen");
+
+    // Thinking: Often involves a pucker, mouth roll, or looking upwards/squinting
+    // We combine a few "pensive" traits
+    const puckerScore = getScore("mouthPucker");
+    const mouthRollScore = getScore("mouthRollLower"); // Biting lip
+    const chinRaiseScore = getScore("chinRaise"); // Often happens when thinking
+    const thinkingScore = Math.max(puckerScore, mouthRollScore, (chinRaiseScore + puckerScore) / 2);
+
+    // 2. DEFINE THRESHOLDS
+    // These are "sensitivity" levels. Lower = more sensitive, Higher = strict.
+    const THRESHOLDS = {
+      smile: 0.45,
+      focus: 0.4,
+      thinking: 0.35,
+      jawOpen: 0.18, // Jaw doesn't need to be fully unhinged to be "open"
+    };
+
+    // 3. DETERMINE DOMINANT EXPRESSION
+    // Instead of an immediate 'return', we find which score is highest relative to its threshold.
+    
+    let currentExpression = "Neutral";
+    let maxConfidence = 0;
+
+    // Check Smile
+    if (smileScore > THRESHOLDS.smile && smileScore > maxConfidence) {
+      currentExpression = "Smiling";
+      maxConfidence = smileScore;
+    }
+
+    // Check Focus (Prioritize focus only if it's strong)
+    if (focusScore > THRESHOLDS.focus && focusScore > maxConfidence) {
+      currentExpression = "Serious/Focused";
+      maxConfidence = focusScore;
+    }
+
+    // Check Thinking
+    if (thinkingScore > THRESHOLDS.thinking && thinkingScore > maxConfidence) {
+      currentExpression = "Thinking";
+      maxConfidence = thinkingScore;
+    }
+
+    // Check Speaking (Jaw Open)
+    // Note: We often treat 'speaking' as a lower priority override, 
+    // or checks if it is significantly higher than others.
+    if (jawOpenScore > THRESHOLDS.jawOpen) {
+      // Special logic: You can smile and speak, but usually, jaw open implies talking.
+      // If the jaw is VERY open, it overrides a weak smile.
+      if (jawOpenScore > maxConfidence) {
+        currentExpression = "Speaking";
+        maxConfidence = jawOpenScore;
+      }
+    }
+
+    return currentExpression;
+  };
+
+  const analyzeInterviewPerformance = () => {
+    if (!results?.faceBlendshapes?.[0]) return null;
+    const blendshapes = results.faceBlendshapes[0].categories;
+
+    // Helper
+    const getScore = (name) => blendshapes.find(b => b.categoryName === name)?.score || 0;
+
+    // --- 1. DETECT GAZE & CONFIDENCE (Looking Down/Away) ---
+    const lookDown = (getScore("eyeLookDownLeft") + getScore("eyeLookDownRight")) / 2;
+    const lookUp = (getScore("eyeLookUpLeft") + getScore("eyeLookUpRight")) / 2;
+
+    // "Shifty Eyes" - looking left/right constantly
+    const lookLeft = getScore("eyeLookOutLeft") + getScore("eyeLookInRight"); // Eyes moving left
+    const lookRight = getScore("eyeLookInLeft") + getScore("eyeLookOutRight"); // Eyes moving right
+    const sideGlance = Math.max(lookLeft, lookRight) / 2;
+
+    // Confidence Score Calculation (0 to 1)
+    // Penalize looking down heavily, penalize side glances slightly
+    let confidenceScore = 1.0;
+    if (lookDown > 0.4) confidenceScore -= 0.4; // Major penalty for looking down
+    if (sideGlance > 0.5) confidenceScore -= 0.2; // Minor penalty for looking away
+
+    // --- 2. DETECT NERVOUS HABITS (Micro-expressions) ---
+    // Lip Press: Pressing lips together (Anxiety/Withholding)
+    const lipPress = (getScore("mouthPressLeft") + getScore("mouthPressRight")) / 2;
+
+    // Lip Bite: Rolling lips inward (Nervousness)
+    const lipBite = getScore("mouthRollLower");
+
+    // Brow Furrow: Confusion or intense stress
+    const frown = (getScore("browDownLeft") + getScore("browDownRight")) / 2;
+
+    let nervousScore = 0;
+    if (lipPress > 0.3) nervousScore += 0.4;
+    if (lipBite > 0.3) nervousScore += 0.5;
+    if (frown > 0.4) nervousScore += 0.3;
+
+    // --- 3. DETERMINE STATE LABEL ---
+    let status = "Confident / Engaged"; // Default good state
+
+    if (lookDown > 0.5) {
+      status = "Looking Down (Low Confidence)";
+    } else if (sideGlance > 0.6) {
+      status = "Distracted / Looking Away";
+    } else if (nervousScore > 0.5) {
+      status = "Tense / Nervous";
+    } else if (lookUp > 0.5) {
+      status = "Thinking / Recalling"; // Looking up is usually recalling info, not bad
+    }
+
+    // --- 4. RETURN DATA FOR UI ---
+    return {
+      status: status,
+      metrics: {
+        confidence: Math.max(0, confidenceScore.toFixed(2)), // 0.0 - 1.0
+        nervousness: Math.min(1, nervousScore.toFixed(2)), // 0.0 - 1.0
+        eyeContact: (1 - lookDown - sideGlance).toFixed(2) // Estimate of direct gaze
+      },
+      // Useful for debugging specific movements
+      raw: { lookDown, lipPress, lipBite }
+    };
   };
 
   const handleEndCall = async () => {
@@ -142,16 +335,31 @@ export default function InterviewRoom() {
     setIsSaving(true);
     
     try {
+      // 1. Get Visual Metrics
+      const visualAnalysis = analyzeInterviewPerformance();
+      
+      // Prepare full transcript
+      const currentEntry = { 
+        question: currentQuestion, 
+        answer: transcript.trim() || "[User ended interview]" 
+      };
+      const fullHistory = [...interviewHistory, currentEntry];
+      const formattedTranscript = fullHistory.map((h, i) => `Q${i+1}: ${h.question}\nA: ${h.answer}`).join("\n\n");
+
+      // 2. Get AI Evaluation (Content + Clarity + Combined Confidence)
+      const aiEvaluation = await geminiService.evaluateInterviewPerformance(
+        formattedTranscript,
+        visualAnalysis ? visualAnalysis.metrics : {}
+      );
+
       await interviewService.updateInterview(id, {
-        score: 82,
-        confidenceScore: 75,
-        clarityScore: 88,
-        answerScore: 84,
-        transcript: "AI: " + currentQuestion + "\nYou: " + transcript,
-        feedback: [
-          { time: "0:10", type: "positive", text: "Great eye contact during the start." },
-          { time: "0:30", type: "info", text: "Try to vary your pitch more." }
-        ]
+        score: aiEvaluation.score,
+        confidenceScore: aiEvaluation.confidenceScore,
+        clarityScore: aiEvaluation.clarityScore,
+        answerScore: aiEvaluation.answerScore,
+        transcript: formattedTranscript,
+        feedback: aiEvaluation.feedback,
+        keyInsights: aiEvaluation.keyInsights
       });
       navigate(`/report/${id}`);
     } catch (error) {
@@ -224,24 +432,18 @@ export default function InterviewRoom() {
         </div>
 
         {/* AI Interactor (Small Overlay) */}
-        <div className="absolute bottom-10 right-10 w-72 bg-zinc-900/90 backdrop-blur-xl rounded-2xl border border-zinc-800 overflow-hidden shadow-2xl p-5">
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Sparkles className={cn("h-5 w-5 text-primary", (isThinking || isAISpeaking) && "animate-pulse")} />
-                  {isAISpeaking && (
-                    <div className="absolute -top-1 -right-1">
-                      <div className="h-2 w-2 bg-primary rounded-full animate-ping" />
-                    </div>
-                  )}
-                </div>
+        <div className="absolute bottom-10 right-10 w-80 bg-zinc-900/90 backdrop-blur-xl rounded-2xl border border-zinc-800 overflow-hidden shadow-2xl flex flex-col">
+          {/* Status Indicator */}
+          <div className="p-4 pb-0 flex justify-end">
+             <div className="flex items-center gap-2">
                 <span className="text-[10px] uppercase tracking-widest text-zinc-400 font-bold">AI Interviewer</span>
-              </div>
-              {isAISpeaking && <Volume2 className="h-4 w-4 text-primary animate-bounce" />}
-            </div>
-            
-            <div className="text-sm text-zinc-200 leading-relaxed min-h-[60px]">
+                {isAISpeaking && <Volume2 className="h-4 w-4 text-primary animate-bounce" />}
+             </div>
+          </div>
+
+          {/* Text & Controls */}
+          <div className="p-5 pt-4 flex flex-col gap-4">
+            <div className="text-sm text-zinc-200 leading-relaxed min-h-[60px] max-h-[100px] overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent pr-2">
               {isThinking ? (
                 <div className="flex items-center gap-2 text-zinc-400">
                   <Loader2 className="h-4 w-4 animate-spin" />

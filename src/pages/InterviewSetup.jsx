@@ -8,13 +8,44 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Upload, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { interviewService } from "@/services/interviewService";
+import { geminiService } from "@/services/geminiService";
+import { extractTextFromPDF } from "@/lib/pdfUtils";
+import { CheckCircle2, FileText } from "lucide-react";
 
 export default function InterviewSetup() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [analyzingCV, setAnalyzingCV] = useState(false);
+  const [cvSummary, setCvSummary] = useState(null);
+  const [cvFileName, setCvFileName] = useState("");
   const [type, setType] = useState("general");
   const [difficulty, setDifficulty] = useState("medium");
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.type !== "application/pdf") {
+      alert("Please upload a PDF file.");
+      return;
+    }
+
+    setCvFileName(file.name);
+    setAnalyzingCV(true);
+
+    try {
+      const text = await extractTextFromPDF(file);
+      const summary = await geminiService.analyzeCV(text);
+      setCvSummary(summary);
+    } catch (error) {
+      console.error("Error processing CV:", error);
+      alert("Failed to process CV. Please try again.");
+      setCvFileName("");
+    } finally {
+      setAnalyzingCV(false);
+    }
+  };
 
   const handleStart = async (e) => {
     e.preventDefault();
@@ -25,6 +56,7 @@ export default function InterviewSetup() {
       const interviewId = await interviewService.createInterview(user.uid, {
         type,
         difficulty,
+        cvSummary, // Pass the analyzed CV context
       });
       navigate(`/interview/${interviewId}`);
     } catch (error) {
@@ -80,10 +112,45 @@ export default function InterviewSetup() {
 
             <div className="space-y-2">
               <Label htmlFor="cv">Upload CV (Optional)</Label>
-              <div className="border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center gap-2 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
-                <Upload className="h-8 w-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">Drag and drop or click to upload PDF/Docx</p>
-                <Input id="cv" type="file" className="hidden" />
+              <div className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center gap-2 transition-colors ${
+                cvSummary ? "bg-green-50 border-green-200" : "bg-muted/30 hover:bg-muted/50 cursor-pointer"
+              }`}>
+                {analyzingCV ? (
+                  <>
+                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    <p className="text-sm text-muted-foreground">Analyzing your CV...</p>
+                  </>
+                ) : cvSummary ? (
+                  <>
+                    <CheckCircle2 className="h-8 w-8 text-green-500" />
+                    <p className="text-sm font-medium text-green-700">CV Analyzed Successfully</p>
+                    <p className="text-xs text-muted-foreground">{cvFileName}</p>
+                    <Button 
+                      variant="link" 
+                      size="sm" 
+                      className="text-xs h-auto p-0 text-red-500"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setCvSummary(null);
+                        setCvFileName("");
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </>
+                ) : (
+                  <label htmlFor="cv" className="flex flex-col items-center cursor-pointer w-full h-full">
+                    <Upload className="h-8 w-8 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground mt-2">Drag and drop or click to upload PDF</p>
+                    <Input 
+                      id="cv" 
+                      type="file" 
+                      accept=".pdf"
+                      className="hidden" 
+                      onChange={handleFileUpload}
+                    />
+                  </label>
+                )}
               </div>
             </div>
 
